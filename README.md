@@ -90,6 +90,3 @@ docs/
 ```
 
 The `Scripts/`, `SKSE/`, `README.md`, and `LICENSE` paths are exactly what a release archive contains — no rearrangement is performed when packaging.
-
-## Maintainer's workflow
-
