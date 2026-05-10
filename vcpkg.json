@@ -1,0 +1,11 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg/master/scripts/vcpkg.schema.json",
+  "name": "barefootrealismng",
+  "version-string": "0.1.0",
+  "description": "Native SKSE accelerator for Barefoot Realism (terrain + location detection).",
+  "license": "MIT",
+  "dependencies": [
+    "commonlibsse-ng",
+    "spdlog"
+  ]
+}

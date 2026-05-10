@@ -1,0 +1,10 @@
+* text=auto eol=lf
+
+# Papyrus and CMake on Windows behave best with CRLF in working trees.
+*.psc       text eol=crlf
+*.bat       text eol=crlf
+*.cmd       text eol=crlf
+
+# Treat compiled artifacts as binary even though they happen to be small.
+*.pex       binary
+*.dll       binary
