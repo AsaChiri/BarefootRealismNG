@@ -28,63 +28,6 @@ cmake --build build --config Release
 
 Output: `build\Release\BarefootRealismNG.dll`.
 
-## Deploy
-
-Copy the DLL into the mod folder so SKSE picks it up:
-
-```
-D:\BarefootRealism - Patched\SKSE\Plugins\BarefootRealismNG.dll
-```
-
-## Recompile the changed Papyrus
-
-The repo ships three Papyrus sources under `papyrus/`:
-
-| File | Status | Replaces |
-| --- | --- | --- |
-| `PBFNative.psc` | new — native stub | n/a |
-| `PBFTerrainDetectionQuestScript.psc` | modified | gutted `OnUpdate` / `DetectTerrain` |
-| `PlayerBarefootQuestScript.psc` | modified | replaced `GetCurrentLocationType` |
-
-Drop these into the BarefootRealism mod's `Scripts\Source\` (overwrite the existing two), then recompile.
-
-This repo's authoring used **Bethesda's bundled `PapyrusCompiler.exe`** (ships with Skyrim SE/AE). [russo-2025/papyrus-compiler](https://github.com/russo-2025/papyrus-compiler) is a fine alternative if installed; the Bethesda compiler is what's already on disk for any Skyrim modder.
-
-PowerShell, with paths matching this dev box (substitute for your own):
-
-```powershell
-$compiler = "D:\SteamLibrary\steamapps\common\Skyrim Special Edition\Papyrus Compiler\PapyrusCompiler.exe"
-$flags    = "D:\Program Files\Skyrim\Data\scripts\Source\TESV_Papyrus_Flags.flg"
-$mods     = "D:\ModOrganizer\Skyrim Special Edition\mods"
-$srcDir   = "D:\BarefootRealism - Patched\Scripts\Source"
-$outDir   = "D:\BarefootRealism - Patched\Scripts"
-
-# IMPORTANT: SKSE-extended sources MUST come BEFORE vanilla so SKSE's Armor.psc
-# (which adds GetMaskForSlot etc.) shadows the vanilla Armor.psc.
-$imports = @(
-    "$mods\Skyrim Script Extender (SKSE64)\Scripts\Source",
-    "<Skyrim AE backup>\Data\Source\Scripts",
-    "$mods\powerofthree's Papyrus Extender\Source\scripts",
-    "$mods\SkyUI_5.1_SDK\Scripts\Source",
-    "$mods\SlaveTatsNG\Source\Scripts",
-    "$mods\SlaveTatsNG\Scripts\Source",
-    "$mods\JContainers SE\scripts\source",
-    "$mods\RaceMenu_backup\Scripts\source",
-    $srcDir
-) -join ';'
-
-Push-Location $srcDir
-foreach ($name in 'PBFNative','PBFTerrainDetectionQuestScript','PlayerBarefootQuestScript') {
-    & $compiler $name "-f=$flags" "-i=$imports" "-o=$outDir"
-}
-Pop-Location
-```
-
-Notes on import paths:
-- Vanilla `.psc` for `GlobalVariable`, `Light`, `Hazard`, `ImpactDataSet`, etc. only ship with **AE installs that have extracted `Data\Source\Scripts`** — current Skyrim SE/AE ships them as a `Scripts.zip` inside `Data\`. The dev box used a backup install (`Skyrim Special Edition - 640 backup`) that had them already extracted; if your install only has `Scripts.zip`, extract it first.
-- `SlaveTatsNG` ships its scripts in **two** folders (`Source\Scripts\` for the public `SlaveTats` wrapper and `Scripts\Source\` for the internal `SlaveTatsNG.psc` implementation). Both need to be on the path.
-- `NiOverride.psc` lives in `RaceMenu`'s mod data; on the dev box only `RaceMenu_backup` had it extracted.
-
 ## Runtime requirements (end users)
 
 - SKSE
@@ -124,9 +67,3 @@ papyrus/
   PBFTerrainDetectionQuestScript.psc     modified: OnUpdate + DetectTerrain
   PlayerBarefootQuestScript.psc          modified: GetCurrentLocationType
 ```
-
-## Notes for future work
-
-- Material map (`MapMaterialId` in `SurfaceMaterial.cpp`) is built from Skyrim's documented `MATERIAL_ID` values. Niche cells (volcanic tundra, blackreach) may surface unmapped ids; the native debug-logs each so the table can be expanded from real-world data.
-- The mod's `.esp` is intentionally not modified. The `PBFDetectSurfaceSpell`, `DummyObject`, and 9 `PBF*Hazard` forms remain bound to the quest script's properties so existing save games stay valid.
-- `PBFFeetWashEffectScript` still uses vanilla `IsSwimming` / `GetWaterLevel`. That's a one-shot cold path on spell cast and not worth touching in v1; could be migrated to `PO3_SKSEFunctions.IsRefInWater` for consistency in v1.1.
