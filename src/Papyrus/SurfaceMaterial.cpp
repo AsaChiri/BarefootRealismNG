@@ -6,6 +6,8 @@
 #include "RE/B/bhkShape.h"
 #include "RE/B/bhkWorld.h"
 #include "RE/H/hkpCollidable.h"
+#include "RE/H/hkpShapeBuffer.h"
+#include "RE/H/hkpShapeContainer.h"
 
 #include <atomic>
 #include <mutex>
@@ -155,22 +157,52 @@ std::int32_t GetSurfaceMaterialUnderActor(RE::StaticFunctionTag*, RE::Actor* a_a
     }
 
     const auto* collidable = pick.rayOutput.rootCollidable;
-    const auto* hkShape = collidable ? collidable->GetShape() : nullptr;
-    const auto* bhShape = hkShape ? hkShape->userData : nullptr;
-    const auto  shapeType = hkShape ? static_cast<std::uint32_t>(hkShape->type) : 0u;
-    const auto  rawMat  = bhShape ? bhShape->materialID : RE::MATERIAL_ID::kNone;
-    const auto  surface = bhShape ? MapMaterialId(rawMat) : kUnknown;
+    const auto* hkShape    = collidable ? collidable->GetShape() : nullptr;
+    const auto* bhShape    = hkShape ? hkShape->userData : nullptr;
+    const auto  shapeType  = hkShape ? static_cast<std::uint32_t>(hkShape->type) : 0u;
+
+    // The raycast may have hit a wrapper shape (kBVTree=8, kMOPP=10, kCollection=7,
+    // kList=9, kCompound=17, …) whose top-level materialID is kNone — the real
+    // per-triangle material lives in a child shape. Walk one level via the
+    // standard hkpShapeContainer API (no relocated funcs, no SEH; just two
+    // virtuals that are universally implemented).
+    RE::MATERIAL_ID  rawMat    = bhShape ? bhShape->materialID : RE::MATERIAL_ID::kNone;
+    bool             walked    = false;
+    std::uint32_t    childType = 0;
+    const void*      childHk   = nullptr;
+    if (hkShape && rawMat == RE::MATERIAL_ID::kNone) {
+        const auto* container = hkShape->GetContainer();
+        if (container) {
+            const auto keyIdx = pick.rayOutput.shapeKeyIndex;
+            const auto key    = (keyIdx >= 0 && keyIdx < RE::hkpShapeRayCastOutput::kMaxHierarchyDepth)
+                                  ? pick.rayOutput.shapeKeys[keyIdx]
+                                  : pick.rayOutput.shapeKeys[0];
+            if (key != RE::HK_INVALID_SHAPE_KEY) {
+                RE::hkpShapeBuffer buf{};
+                const auto* childShape = container->GetChildShape(key, buf);
+                if (childShape) {
+                    childHk   = childShape;
+                    childType = static_cast<std::uint32_t>(childShape->type);
+                    walked    = true;
+                    if (const auto* childBh = childShape->userData) {
+                        rawMat = childBh->materialID;
+                    }
+                }
+            }
+        }
+    }
+
+    const auto surface = MapMaterialId(rawMat);
 
     if (diag) {
-        // NO virtual calls / form lookups here: collidable->GetOwner<T>() does
-        // an *unchecked* pointer cast to T — if the hit is e.g. terrain
-        // (hkpRigidBody owner, not a TESObjectREFR), calling any virtual on
-        // the returned pointer crashes with a garbage vtable read.
-        logger::info("[surface #{}] pos=({:.0f},{:.0f},{:.0f}) shapeType={} hkShape={} bhShape={} matRaw={:#010x} mapped={}",
+        // NO unchecked pointer casts here: collidable->GetOwner<T>() crashes
+        // when the owner isn't actually a T (terrain owner is hkpRigidBody,
+        // not TESObjectREFR).
+        logger::info("[surface #{}] pos=({:.0f},{:.0f},{:.0f}) shapeType={} bhShape={} matRaw={:#010x} walked={} childType={} childHk={} mapped={}",
                      n, pos.x, pos.y, pos.z, shapeType,
-                     static_cast<const void*>(hkShape),
                      static_cast<const void*>(bhShape),
                      static_cast<std::uint32_t>(rawMat),
+                     walked, childType, childHk,
                      surface);
     }
 
