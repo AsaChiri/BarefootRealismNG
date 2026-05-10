@@ -147,14 +147,15 @@ std::optional<RE::MATERIAL_ID> PickSurfaceMaterial(RE::Actor* a_actor) {
         return std::nullopt;
     }
 
-    // For compound shapes (terrain triangle meshes, list shapes, etc.), the
-    // top shapeKey identifies the specific sub-shape that was hit. For simple
-    // shapes the key is HK_INVALID_SHAPE_KEY and we fall back to the
-    // top-level material on bhkShape.
-    const auto key = pick.rayOutput.shapeKeys[0];
-    if (key != RE::HK_INVALID_SHAPE_KEY) {
-        return bhShape->GetMaterialID(key);
-    }
+    // Direct field read at bhkShape+0x20. We deliberately do NOT call the
+    // virtual `bhkShape::GetMaterialID(shapeKey)` even for compound shapes:
+    // that path crashed in Skyrim AE 1.6.1170 inside `bhkMoppBvTreeShape`
+    // (interior architecture, e.g. AbandonedPrison01) when fed a shapeKey
+    // from `hkpWorldRayCastOutput::shapeKeys[0]` — the engine dereferences
+    // child-shape data that isn't laid out the way the function expects.
+    // The top-level `materialID` is `kNone` for compound shapes, which the
+    // mod's downstream Papyrus already coerces to "Stone (0)" — a coarse but
+    // safe fallback.
     return bhShape->materialID;
 }
 
