@@ -7,6 +7,7 @@
 #include "RE/B/bhkWorld.h"
 #include "RE/H/hkpCollidable.h"
 
+#include <atomic>
 #include <mutex>
 #include <unordered_set>
 
@@ -101,17 +102,31 @@ constexpr float kForwardOffsetXY = 50.0f;  // matches original Papyrus offset
 constexpr float kVerticalLift    = 10.0f;  // matches original 10-unit lift
 constexpr float kRayLengthDown   = 220.0f; // covers walking forward off a small ledge
 
-// Cast a downward havok ray from a point ~50 units in front of the actor,
-// 10 units above the actor's feet. Returns the MATERIAL_ID at the hit, or
-// std::nullopt if the cell has no havok world or nothing was hit.
-std::optional<RE::MATERIAL_ID> PickSurfaceMaterial(RE::Actor* a_actor) {
+}  // namespace
+
+std::int32_t GetSurfaceMaterialUnderActor(RE::StaticFunctionTag*, RE::Actor* a_actor) {
+    // First 30 calls log full detail at INFO so we can diagnose why a pick
+    // returns -1 without making the user flip log levels. After that, only
+    // the rate-limited "unmapped material" lines fire.
+    static std::atomic<int> s_callCount{ 0 };
+    const int n = ++s_callCount;
+    const bool diag = (n <= 30);
+
+    if (!a_actor) {
+        if (diag) logger::info("[surface #{}] actor=null -> -1", n);
+        return kUnknown;
+    }
+
     auto* cell = a_actor->GetParentCell();
     if (!cell) {
-        return std::nullopt;
+        if (diag) logger::info("[surface #{}] no parent cell -> -1", n);
+        return kUnknown;
     }
     auto* bhkWorld = cell->GetbhkWorld();
     if (!bhkWorld) {
-        return std::nullopt;
+        if (diag) logger::info("[surface #{}] cell '{}' has no bhkWorld -> -1",
+                               n, cell->GetFormEditorID() ? cell->GetFormEditorID() : "?");
+        return kUnknown;
     }
 
     const auto pos   = a_actor->GetPosition();
@@ -123,71 +138,54 @@ std::optional<RE::MATERIAL_ID> PickSurfaceMaterial(RE::Actor* a_actor) {
     };
     const RE::NiPoint3 endPt{ origin.x, origin.y, origin.z - kRayLengthDown };
 
-    // Skyrim units -> Havok meters (1/70).
     const float scale = RE::bhkWorld::GetWorldScale();
 
     RE::bhkPickData pick;
     pick.rayInput.from = RE::hkVector4(origin * scale);
     pick.rayInput.to   = RE::hkVector4(endPt  * scale);
     pick.rayInput.enableShapeCollectionFilter = false;
-    // kLOS is the line-of-sight layer; it doesn't filter out the floor and
-    // ignores most actor capsules, which is exactly what we want here.
     pick.rayInput.filterInfo = static_cast<std::uint32_t>(RE::COL_LAYER::kLOS);
 
-    if (!bhkWorld->PickObject(pick) || !pick.rayOutput.HasHit()) {
-        return std::nullopt;
-    }
-
-    const auto* hkShape = pick.rayOutput.rootCollidable->GetShape();
-    if (!hkShape) {
-        return std::nullopt;
-    }
-    const auto* bhShape = hkShape->userData;
-    if (!bhShape) {
-        return std::nullopt;
-    }
-
-    // Direct field read at bhkShape+0x20. We deliberately do NOT call the
-    // virtual `bhkShape::GetMaterialID(shapeKey)` even for compound shapes:
-    // that path crashed in Skyrim AE 1.6.1170 inside `bhkMoppBvTreeShape`
-    // (interior architecture, e.g. AbandonedPrison01) when fed a shapeKey
-    // from `hkpWorldRayCastOutput::shapeKeys[0]` — the engine dereferences
-    // child-shape data that isn't laid out the way the function expects.
-    // The top-level `materialID` is `kNone` for compound shapes, which the
-    // mod's downstream Papyrus already coerces to "Stone (0)" — a coarse but
-    // safe fallback.
-    return bhShape->materialID;
-}
-
-}  // namespace
-
-std::int32_t GetSurfaceMaterialUnderActor(RE::StaticFunctionTag*, RE::Actor* a_actor) {
-    if (!a_actor) {
+    const bool picked = bhkWorld->PickObject(pick);
+    const bool hasHit = picked && pick.rayOutput.HasHit();
+    if (!hasHit) {
+        if (diag) logger::info("[surface #{}] pos=({:.0f},{:.0f},{:.0f}) origin=({:.0f},{:.0f},{:.0f}) PickObject={} HasHit=false -> -1",
+                               n, pos.x, pos.y, pos.z, origin.x, origin.y, origin.z, picked);
         return kUnknown;
     }
 
-    const auto material = PickSurfaceMaterial(a_actor);
-    if (!material) {
-        return kUnknown;
+    const auto* collidable = pick.rayOutput.rootCollidable;
+    const auto* hkShape = collidable ? collidable->GetShape() : nullptr;
+    const auto* bhShape = hkShape ? hkShape->userData : nullptr;
+    const auto  shapeType = hkShape ? static_cast<std::uint32_t>(hkShape->type) : 0u;
+    const auto  rawMat  = bhShape ? bhShape->materialID : RE::MATERIAL_ID::kNone;
+    const auto  surface = bhShape ? MapMaterialId(rawMat) : kUnknown;
+
+    if (diag) {
+        // NO virtual calls / form lookups here: collidable->GetOwner<T>() does
+        // an *unchecked* pointer cast to T — if the hit is e.g. terrain
+        // (hkpRigidBody owner, not a TESObjectREFR), calling any virtual on
+        // the returned pointer crashes with a garbage vtable read.
+        logger::info("[surface #{}] pos=({:.0f},{:.0f},{:.0f}) shapeType={} hkShape={} bhShape={} matRaw={:#010x} mapped={}",
+                     n, pos.x, pos.y, pos.z, shapeType,
+                     static_cast<const void*>(hkShape),
+                     static_cast<const void*>(bhShape),
+                     static_cast<std::uint32_t>(rawMat),
+                     surface);
     }
 
-    const auto surface = MapMaterialId(*material);
-    if (surface == kUnknown) {
-        // Debug log so the mapping table can grow from real-world data, but
-        // rate-limit to once per unique MATERIAL_ID per session — otherwise a
-        // single odd cell would flood BarefootRealismNG.log.
+    if (surface == kUnknown && rawMat != RE::MATERIAL_ID::kNone) {
         static std::mutex                       s_unmappedMu;
         static std::unordered_set<std::uint32_t> s_unmapped;
-
-        const auto rawId   = static_cast<std::uint32_t>(*material);
-        bool       firstTime = false;
+        const auto rawId = static_cast<std::uint32_t>(rawMat);
+        bool firstTime = false;
         {
             std::lock_guard lock{ s_unmappedMu };
             firstTime = s_unmapped.insert(rawId).second;
         }
         if (firstTime) {
-            logger::debug("Unmapped MATERIAL_ID {} ({:#010x}) under actor {:08X}",
-                          *material, rawId, a_actor->GetFormID());
+            logger::info("Unmapped MATERIAL_ID {} ({:#010x}) under actor {:08X}",
+                         rawMat, rawId, a_actor->GetFormID());
         }
     }
     return surface;
