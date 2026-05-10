@@ -78,6 +78,11 @@ EndFunction
 Event OnInit()
 	Game.GetPlayer().AddSpell(PBFWashFeetSpell)
 	DetectBIS()
+	; Hand the native plugin the global pointers it reads/writes per step.
+	; Also re-called from PBFBISPlayerScript.OnPlayerLoadGame so the cached
+	; pointers survive a process restart (the C++ singleton starts empty each
+	; time the game launches).
+	PBFNative.InitGlobals(FeetDirtiness, FeetPain, FeetRoughness, PlayerLastSurfaceDirtiness)
 	LastUpdateTime = Utility.GetCurrentGameTime()
 	RegisterForUpdate(1)
 	GoToState("Shod")
@@ -245,48 +250,39 @@ Float Function Clamp(Float val, Float min, Float max)
 	return val
 EndFunction
 
-Float Function GetStaggerChance()
+Float Function GetStaggerChance(Int placeType, Int surfaceType)
 ;Stagger chance scales exponentially
 ;The default is set so that f completely pampered feet (toughness 0) the chance is 10% (once every 10 steps, on average)
 ;For completely tough (toughness 1) the chance is 0.1%
 	float base = Config.StaggerMultiplier * Math.pow(2.71828, Config.StaggerExponent * FeetRoughness.GetValue())
-	; Base is calculated for running, for sprinting/walking/sneaking the values are scaled
-	
-	if (PlayerRef.IsSprinting())
+	; Base is calculated for running, for sprinting/walking/sneaking the values are scaled.
+	; Sneaking is checked first because the engine sets IsSneaking and IsRunning together when
+	; the player is sneak-walking — the previous order made the sneak branch unreachable.
+	if (PlayerRef.IsSneaking())
+		base *= Config.SneakingStaggerModifier
+	elseif (PlayerRef.IsSprinting())
 		base *= Config.SprintingStaggerModifier
 	elseif (!PlayerRef.IsRunning())
 		base *= Config.WalkingStaggerModifier
-	elseif (PlayerRef.IsSneaking())
-		base *= Config.SneakingStaggerModifier
 	endif
 
 	; Also scale by the "roughness coefficient" inferred from the cell type and the surface roughness
-	Int PlaceType = GetCurrentLocationType()
-	Int SurfaceType = PlayerLastSurfaceType.GetValueInt()
-	
-	base *= Config.LocationRoughness[PlaceType] * Config.SurfaceRoughness[SurfaceType]
-	
+	base *= Config.LocationRoughness[placeType] * Config.SurfaceRoughness[surfaceType]
+
 	return base
 EndFunction
 
-Float Function GetCurrentDirtinessRate()
+Float Function GetCurrentDirtinessRate(Int placeType, Int surfaceType)
 ; How quickly do the player's feet get dirty (score per step)
-	Int PlaceType = GetCurrentLocationType()
-	int SurfaceType = PlayerLastSurfaceType.GetValueInt()
-
-	if (SurfaceType == -1)
-		SurfaceType = 0
-	endif
-
-	float surfaceDirtiness = Config.SurfaceDirtiness[SurfaceType]
+	float surfaceDirtiness = Config.SurfaceDirtiness[surfaceType]
 	; Exterior and is raining: wet feet (TODO: separate magic effect?)
 	if ((Weather.GetSkyMode() == 2 || Weather.GetSkyMode() == 3) && Weather.GetCurrentWeather().GetClassification() == 2)
 		surfaceDirtiness = surfaceDirtiness * 2
 	endif
 
-	float target = surfaceDirtiness * Config.LocationDirtiness[PlaceType]
+	float target = surfaceDirtiness * Config.LocationDirtiness[placeType]
 	PlayerLastSurfaceDirtiness.SetValue(target)
-	float delta = target - FeetDirtiness.GetValue() 
+	float delta = target - FeetDirtiness.GetValue()
 	if (delta > 0)
 		return Config.PositiveDeltaDirtinessMultiplier * delta
 	else
@@ -294,25 +290,17 @@ Float Function GetCurrentDirtinessRate()
 	endif
 EndFunction
 
-Float Function GetCurrentPainRate()
-	int SurfaceType = PlayerLastSurfaceType.GetValueInt()
-
-	if (SurfaceType == -1)
-		SurfaceType = 0
-	endif
-	
-	Int PlaceType = GetCurrentLocationType()
-	
+Float Function GetCurrentPainRate(Int placeType, Int surfaceType)
 	; This might be a bit overengineered. The idea is that the pain increase dramatically decreases when feet roughness
 	; is greater than the total surface roughness. Let's say the feet roughness is 0 and the player is walking around Whiterun
-	; (location roughness 1.0, surface roughness 0.4 for a total of 0.4). Then, with the default settings, the pain increase 
+	; (location roughness 1.0, surface roughness 0.4 for a total of 0.4). Then, with the default settings, the pain increase
 	; is 0.01 * (0.4 / (0 + 1)) ^ 4 = 0.000256 per step or 0.256 per thousand steps (will take a whole day to clear).
 	; If the roughness is 0.4, we get 0.01 * (0.4 / 1.4)^4; 0.067 per thousand steps, about 6 hours to clear.
 	; If the roughness is 1, we get 0.016, about 1.5 hours to clear.
 	; TODO perhaps come up with something simpler.
-	float score = Config.LocationRoughness[PlaceType] * Config.SurfaceRoughness[SurfaceType] / (FeetRoughness.GetValue() + 1)
+	float score = Config.LocationRoughness[placeType] * Config.SurfaceRoughness[surfaceType] / (FeetRoughness.GetValue() + 1)
 	return Config.PainIncreaseMul * Math.Pow(score, Config.PainIncreaseExp)
-EndFunction	
+EndFunction
 
 Function CleanFeet()
 	UpdateTattoo(-1)
@@ -434,49 +422,69 @@ EndEvent
 
 
 Event OnAnimationEvent(ObjectReference aktarg, String EventName)
+	; Resolve once per step. The per-step math is now in C++ via
+	; PBFNative.ApplyDirtinessPainStep; this event reduces to a few VM ops
+	; plus two native calls.
+	Int placeType = GetCurrentLocationType()
+	Int surfaceType = PlayerLastSurfaceType.GetValueInt()
+	if (surfaceType == -1)
+		surfaceType = 0
+	endif
 
-		if (Utility.RandomFloat(0.0, 1.0) < GetStaggerChance())
-			Debug.SendAnimationEvent(PlayerRef, "staggerStart")
-			PlayerRef.CreateDetectionEvent(PlayerRef, 10)
-			if Config.StaggerSound
-				if PlayerRef.GetActorBase().GetSex() == 1
-					PainSound.Play(PlayerRef)
-				else
-					PainSoundMale.Play(PlayerRef)
-				endif
+	; --- Stagger (pure compute in C++, side effects stay here for sound/anim) ---
+	Float staggerChance = PBFNative.GetStaggerChanceNative( \
+		PlayerRef, \
+		Config.StaggerMultiplier, Config.StaggerExponent, \
+		Config.SprintingStaggerModifier, Config.WalkingStaggerModifier, Config.SneakingStaggerModifier, \
+		Config.LocationRoughness[placeType], Config.SurfaceRoughness[surfaceType])
+
+	if (Utility.RandomFloat(0.0, 1.0) < staggerChance)
+		Debug.SendAnimationEvent(PlayerRef, "staggerStart")
+		PlayerRef.CreateDetectionEvent(PlayerRef, 10)
+		if Config.StaggerSound
+			if PlayerRef.GetActorBase().GetSex() == 1
+				PainSound.Play(PlayerRef)
+			else
+				PainSoundMale.Play(PlayerRef)
 			endif
 		endif
+	endif
 
-		StepsBarefoot.SetValue(StepsBarefoot.GetValue() + 1)
-	
-		float OldDirtiness = FeetDirtiness.GetValue()
-		float NewDirtiness = OldDirtiness + GetCurrentDirtinessRate()
+	StepsBarefoot.SetValue(StepsBarefoot.GetValue() + 1)
 
-		Clamp(NewDirtiness, 0, 1)
-		FeetDirtiness.SetValue(NewDirtiness)
-		if (GetDirtinessTier(OldDirtiness) != GetDirtinessTier(NewDirtiness))
-			UpdateTattoo(GetDirtinessTier(NewDirtiness))
-			ClearDirtinessSpells()
-			PlayerRef.AddSpell(GetDirtinessSpell(GetDirtinessTier(NewDirtiness)))
-		endif
+	; --- Dirtiness / Pain / Roughness math (all globals updated in C++) ---
+	Float surfaceDirtiness = Config.SurfaceDirtiness[surfaceType]
+	; Exterior + raining: wet feet (weather mul stays in Papyrus since SkyMode +
+	; classification are already cheap C-side natives in vanilla).
+	if ((Weather.GetSkyMode() == 2 || Weather.GetSkyMode() == 3) && Weather.GetCurrentWeather().GetClassification() == 2)
+		surfaceDirtiness = surfaceDirtiness * 2
+	endif
 
-		float OldPain = FeetPain.GetValue()
-		float PainIncrease = GetCurrentPainRate()
-		float NewPain = OldPain + PainIncrease
-		
-		Clamp(NewPain, 0, 1)
-		FeetPain.SetValue(NewPain)
-			if (GetPainTier(OldPain) != GetPainTier(NewPain))
-				ClearPainSpells()
-				PlayerRef.AddSpell(GetPainSpell(GetPainTier(NewPain)))
-			endif
+	; Snapshot the pain tier BEFORE the native mutates FeetPain, so we can
+	; detect a tier transition for the pain spell sync (the native only
+	; reports dirtiness-tier transitions because SlaveTats is the only thing
+	; that hard-cares — pain spells are managed entirely on the Papyrus side).
+	Int oldPainTier = GetPainTier(FeetPain.GetValue())
 
-		float OldRoughness = FeetRoughness.GetValue()
-		float NewRoughness = OldRoughness + PainIncrease * Config.RoughnessIncreaseMul
+	Int newDirtinessTier = PBFNative.ApplyDirtinessPainStep( \
+		surfaceDirtiness, Config.LocationDirtiness[placeType], \
+		Config.LocationRoughness[placeType], Config.SurfaceRoughness[surfaceType], \
+		Config.PositiveDeltaDirtinessMultiplier, Config.NegativeDeltaDirtinessMultiplier, \
+		Config.PainIncreaseMul, Config.PainIncreaseExp, Config.RoughnessIncreaseMul)
 
-		Clamp(NewRoughness, 0, 1)
-		FeetRoughness.SetValue(NewRoughness)
+	; Sentinel -2147483648 = "no dirtiness tier change". Anything else is the
+	; new tier and means we should refresh SlaveTats + the barter-damage spell.
+	if newDirtinessTier != -2147483648
+		UpdateTattoo(newDirtinessTier)
+		ClearDirtinessSpells()
+		PlayerRef.AddSpell(GetDirtinessSpell(newDirtinessTier))
+	endif
 
+	Int newPainTier = GetPainTier(FeetPain.GetValue())
+	if newPainTier != oldPainTier
+		ClearPainSpells()
+		PlayerRef.AddSpell(GetPainSpell(newPainTier))
+	endif
 EndEvent
 
 EndState

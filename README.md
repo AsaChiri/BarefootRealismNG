@@ -1,8 +1,8 @@
 # BarefootRealismNG
 
-Native SKSE accelerator for the [Barefoot Realism](https://www.loverslab.com/files/file/5070-barefoot-realism/) Skyrim SE/AE/VR mod.
+> Native SKSE accelerator for [**Barefoot Realism**](https://www.loverslab.com/files/file/5070-barefoot-realism/) on Skyrim SE / AE / VR. All gameplay design, formulas, and balance are the **original mod author's** work — this project only swaps the heaviest Papyrus loops for a CommonLibSSE-NG plugin. See [`docs/original-readme.md`](docs/original-readme.md) for the upstream documentation that describes the dirtiness / pain / roughness model.
 
-Replaces two of Barefoot Realism's most expensive Papyrus paths with a single CommonLibSSE-NG plugin that exposes two native Papyrus functions on the `PBFNative` script.
+A handful of native Papyrus functions on the `PBFNative` script replace the parts of the original mod that ran every second / every footstep, plus a few Papyrus-side correctness fixes.
 
 ## What it replaces
 
@@ -10,8 +10,16 @@ Replaces two of Barefoot Realism's most expensive Papyrus paths with a single Co
 | --- | --- |
 | `PBFTerrainDetectionQuestScript.OnUpdate` — every second, did `2× PlaceAtMe + 2× MoveTo + Spell.Cast + 2× Delete + 9× FindClosestReferenceOfTypeFromRef` to figure out which surface decal had spawned under the player | A single downward havok pick from C++; reads `bhkShape::materialID` and maps to the mod's 0..8 surface ids |
 | `PlayerBarefootQuestScript.GetCurrentLocationType` — called twice **per footstep** (~6×/sec while sprinting) doing weather + cell-owner + faction-owner + cell-name substring search | Same logic in C++, one VM call per invocation |
+| `PlayerBarefootQuestScript.OnAnimationEvent` math — five global reads, five global writes, two `Math.Pow` calls, ten `Config` property reads, all in Papyrus per footstep | Two native calls (`GetStaggerChanceNative` for pure compute and `ApplyDirtinessPainStep` for the dirtiness/pain/roughness state writes). C++ enforces the `Clamp(...)` correctly that the original Papyrus accidentally dropped on the floor. |
 
 Water detection is delegated to **powerof3's PapyrusExtenderSSE** (`PO3_SKSEFunctions.IsRefInWater`); the surface-material native returns -1 on miss and water resolves on the Papyrus side.
+
+## Papyrus-side correctness fixes shipped alongside
+
+- `Clamp(NewDirtiness, 0, 1)` was a no-op in the original (Papyrus pass-by-value with a discarded return). After enough sprinting, `FeetDirtiness` / `FeetPain` / `FeetRoughness` could drift above 1.0. Fixed to assign the clamped result back.
+- The sneak branch in `GetStaggerChance` was unreachable: the original `if IsSprinting / elseif !IsRunning / elseif IsSneaking` chain made the third arm a dead branch because IsSneaking is never reachable past `!IsRunning == false`. Reordered to check `IsSneaking` first.
+- Per-footstep `GetCurrentLocationType()` and `GetDirtinessTier()` calls deduplicated.
+- `PBFFeetWashEffectScript` (Wash Feet spell) now uses `PO3_SKSEFunctions.IsRefInWater` instead of `IsSwimming` + `Cell.GetWaterLevel`.
 
 ## Build (Windows + MSVC + vcpkg)
 

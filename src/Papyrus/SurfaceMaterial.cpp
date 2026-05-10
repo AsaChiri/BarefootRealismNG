@@ -7,6 +7,9 @@
 #include "RE/B/bhkWorld.h"
 #include "RE/H/hkpCollidable.h"
 
+#include <mutex>
+#include <unordered_set>
+
 namespace BarefootRealismNG::Papyrus {
 
 namespace {
@@ -56,6 +59,7 @@ std::int32_t MapMaterialId(RE::MATERIAL_ID a_id) {
         case M::kWoodHeavy:
         case M::kWoodAsStairs:
         case M::kWoodStairs:
+        case M::kDLC1SwingingBridge:
             return kWood;
 
         case M::kGrass:
@@ -63,9 +67,14 @@ std::int32_t MapMaterialId(RE::MATERIAL_ID a_id) {
 
         case M::kSnow:
         case M::kSnowStairs:
+        case M::kIce:
+        case M::kIceForm:
             return kSnow;
 
         case M::kCarpet:
+        case M::kCloth:
+        case M::kDLC1DeerSkin:
+        case M::kDLC1SabreCatPelt:
             return kCarpet;
 
         case M::kGravel:
@@ -75,6 +84,13 @@ std::int32_t MapMaterialId(RE::MATERIAL_ID a_id) {
         case M::kWater:
         case M::kWaterPuddle:
             return kWater;
+
+        // Solstheim ash piles and small treasure piles behave more like dirt/stone
+        // than their default fallback; map them explicitly.
+        case M::kAsh:
+            return kDirt;
+        case M::kCoin:
+            return kStone;
 
         default:
             return kUnknown;
@@ -156,9 +172,22 @@ std::int32_t GetSurfaceMaterialUnderActor(RE::StaticFunctionTag*, RE::Actor* a_a
 
     const auto surface = MapMaterialId(*material);
     if (surface == kUnknown) {
-        // Debug log so the mapping table can grow from real-world data.
-        logger::debug("Unmapped MATERIAL_ID {} under actor {:08X}",
-                      *material, a_actor->GetFormID());
+        // Debug log so the mapping table can grow from real-world data, but
+        // rate-limit to once per unique MATERIAL_ID per session — otherwise a
+        // single odd cell would flood BarefootRealismNG.log.
+        static std::mutex                       s_unmappedMu;
+        static std::unordered_set<std::uint32_t> s_unmapped;
+
+        const auto rawId   = static_cast<std::uint32_t>(*material);
+        bool       firstTime = false;
+        {
+            std::lock_guard lock{ s_unmappedMu };
+            firstTime = s_unmapped.insert(rawId).second;
+        }
+        if (firstTime) {
+            logger::debug("Unmapped MATERIAL_ID {} ({:#010x}) under actor {:08X}",
+                          *material, rawId, a_actor->GetFormID());
+        }
     }
     return surface;
 }

@@ -16,17 +16,22 @@ find_package(spdlog CONFIG REQUIRED)
 
 set(SOURCES
     src/Plugin.cpp
+    src/State.cpp
     src/Papyrus/PBFNative.cpp
     src/Papyrus/SurfaceMaterial.cpp
     src/Papyrus/LocationType.cpp
+    src/Papyrus/BarefootStep.cpp
 )
 
 set(HEADERS
     src/PCH.h
+    src/ForceIncludes.h
     src/Logging.h
+    src/State.h
     src/Papyrus/PBFNative.h
     src/Papyrus/SurfaceMaterial.h
     src/Papyrus/LocationType.h
+    src/Papyrus/BarefootStep.h
 )
 
 add_commonlibsse_plugin(
