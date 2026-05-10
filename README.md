@@ -47,31 +47,49 @@ Output: `build\Release\BarefootRealismNG.dll`.
 After install:
 
 1. `My Games\Skyrim Special Edition\SKSE\skse64.log` should mention `BarefootRealismNG.dll loaded`.
-2. `My Games\Skyrim Special Edition\SKSE\Plugins\BarefootRealismNG.log` should print `Registered 2 Papyrus natives on PBFNative`.
+2. `My Games\Skyrim Special Edition\SKSE\Plugins\BarefootRealismNG.log` should print `Registered 5 Papyrus natives on PBFNative`.
 3. In-game, with feet bare, `getglobalvalue PlayerLastDetectedSurface` should cycle 0..8 across stone / dirt / wood / grass / snow / water as expected.
 4. `getglobalvalue PlayerCellType` should match the original mod's behavior:
    - 0 in Breezehome / 1 in Embershard Mine / 2 in open Whiterun / 3 in Riverwood Trader / 4 in the tundra outside Whiterun.
 
-## Layout
+## Repository layout
+
+The repo mirrors the **deployed mod folder** under `Scripts/` and `SKSE/`, so cloning it and copying those two trees into your MO2 mod (or Skyrim `Data\`) is a valid install.
 
 ```
-CMakeLists.txt            build config (uses add_commonlibsse_plugin)
-CMakePresets.json         vs2022-windows + ninja-release presets
-vcpkg.json                deps: commonlibsse-ng, spdlog
-vcpkg-configuration.json  upstream + Color-Glass registry pins
-src/
-  PCH.h                   precompiled header (RE/, REL/, SKSE/, spdlog)
-  ForceIncludes.h         /FI'd everywhere — exposes std::literals at
-                          global scope so the auto-generated plugin glue
-                          compiles
-  Logging.h               spdlog file-sink initialization
-  Plugin.cpp              SKSEPluginLoad entry + kPostLoad registration
+CMakeLists.txt              build config (uses add_commonlibsse_plugin)
+CMakePresets.json           vs2022-windows + ninja-release presets
+vcpkg.json                  deps: commonlibsse-ng, spdlog
+vcpkg-configuration.json    upstream + Color-Glass registry pins
+src/                        C++ plugin source
+  PCH.h                     precompiled header (RE/, REL/, SKSE/, spdlog)
+  ForceIncludes.h           /FI'd everywhere — exposes std::literals at
+                            global scope so the auto-generated plugin glue
+                            compiles
+  Logging.h                 spdlog file-sink initialization
+  Plugin.cpp                SKSEPluginLoad entry + kPostLoad registration
+  State.{h,cpp}             singleton: cached GlobalVariable pointers
   Papyrus/
-    PBFNative.{h,cpp}     register the two natives
-    SurfaceMaterial.cpp   havok pick + MATERIAL_ID -> 0..8 table
-    LocationType.cpp      Sky::mode + cell owner + cell name -> 0..4
-papyrus/
-  PBFNative.psc                          native stub (new)
-  PBFTerrainDetectionQuestScript.psc     modified: OnUpdate + DetectTerrain
-  PlayerBarefootQuestScript.psc          modified: GetCurrentLocationType
+    PBFNative.{h,cpp}       register the natives
+    SurfaceMaterial.cpp     havok pick + MATERIAL_ID -> 0..8 table
+    LocationType.cpp        Sky::mode + cell owner + cell name -> 0..4
+    BarefootStep.cpp        InitGlobals + GetStaggerChanceNative + ApplyDirtinessPainStep
+Scripts/
+  Source/                   Papyrus source (deploys to Data\Scripts\Source)
+    PBFNative.psc
+    PBFTerrainDetectionQuestScript.psc
+    PlayerBarefootQuestScript.psc
+    PBFFeetWashEffectScript.psc
+    PBFBISPlayerScript.psc
+  *.pex                     compiled Papyrus (deploys to Data\Scripts)
+SKSE/
+  Plugins/
+    BarefootRealismNG.dll   compiled native plugin (deploys to Data\SKSE\Plugins)
+docs/
+  original-readme.md        upstream mod author's design notes
 ```
+
+The `Scripts/`, `SKSE/`, `README.md`, and `LICENSE` paths are exactly what a release archive contains — no rearrangement is performed when packaging.
+
+## Maintainer's workflow
+
