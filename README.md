@@ -1,6 +1,6 @@
 # BarefootRealismNG
 
-Native SKSE accelerator for the [Barefoot Realism](https://www.nexusmods.com/skyrimspecialedition/mods/) Skyrim SE/AE/VR mod.
+Native SKSE accelerator for the [Barefoot Realism](https://www.loverslab.com/files/file/5070-barefoot-realism/) Skyrim SE/AE/VR mod.
 
 Replaces two of Barefoot Realism's most expensive Papyrus paths with a single CommonLibSSE-NG plugin that exposes two native Papyrus functions on the `PBFNative` script.
 
