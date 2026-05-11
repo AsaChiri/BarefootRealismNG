@@ -2,12 +2,13 @@
 
 #include "Papyrus/SurfaceMaterial.h"
 
+#include "RE/B/BSAtomic.h"
+#include "RE/B/bhkCharacterController.h"
 #include "RE/B/bhkPickData.h"
 #include "RE/B/bhkShape.h"
 #include "RE/B/bhkWorld.h"
 #include "RE/H/hkpCollidable.h"
-#include "RE/H/hkpShapeBuffer.h"
-#include "RE/H/hkpShapeContainer.h"
+#include "RE/T/TES.h"
 
 #include <atomic>
 #include <mutex>
@@ -106,30 +107,52 @@ constexpr float kRayLengthDown   = 220.0f; // covers walking forward off a small
 
 }  // namespace
 
-std::int32_t GetSurfaceMaterialUnderActor(RE::StaticFunctionTag*, RE::Actor* a_actor) {
-    // First 30 calls log full detail at INFO so we can diagnose why a pick
-    // returns -1 without making the user flip log levels. After that, only
-    // the rate-limited "unmapped material" lines fire.
-    static std::atomic<int> s_callCount{ 0 };
-    const int n = ++s_callCount;
-    const bool diag = (n <= 30);
+namespace {
 
-    if (!a_actor) {
-        if (diag) logger::info("[surface #{}] actor=null -> -1", n);
-        return kUnknown;
-    }
+// Three-layer pipeline used by OpenAnimationReplacer / RaySense / Trails.
+// Returns kNone on failure; the caller maps to the mod's 0..8 surface id.
+//
+// Layer 1 (preferred): the bhkCharacterController already caches the
+// "ground material under this actor" byte at offset 0x304, updated every
+// physics tick by the engine for footstep sound selection. Crash-free,
+// zero raycast overhead, accurate.
+//
+// Layer 2 (outdoor fallback): RE::TES::GetLandMaterialType(pos) reads the
+// per-quadrant TESLandTexture data on the current TESObjectLAND record.
+// Returns kNone for non-LAND triangles (roads, water, statics).
+//
+// Layer 3 (last resort): downward havok pick + read top-level
+// bhkShape::materialID. Most shapes hit are wrappers (kBVTree, kMOPP)
+// whose top-level materialID is kNone, but small clutter and some statics
+// do expose a real material here. We DO NOT call bhkShape::GetMaterialID
+// or hkpShapeContainer::GetChildShape — both have crashed inside the engine
+// on compound shapes (the shapeKey values in rayOutput aren't valid indices
+// into Skyrim's compound shape data the way the engine expects).
+//
+// Source references: see notes-for-future-me block at the top of this file
+// — OAR src/Conditions.cpp, RaySense src/RaySenseLogic.cpp, Precision
+// src/Utils.cpp.
+constexpr std::ptrdiff_t kCharCtrlMaterialOffset = 0x304;
 
+RE::MATERIAL_ID ReadCharControllerMaterial(RE::Actor* a_actor) {
+    auto* cc = a_actor->GetCharController();
+    if (!cc) return RE::MATERIAL_ID::kNone;
+    return *SKSE::stl::adjust_pointer<RE::MATERIAL_ID>(cc, kCharCtrlMaterialOffset);
+}
+
+RE::MATERIAL_ID ReadLandMaterial(RE::Actor* a_actor) {
     auto* cell = a_actor->GetParentCell();
-    if (!cell) {
-        if (diag) logger::info("[surface #{}] no parent cell -> -1", n);
-        return kUnknown;
-    }
+    if (!cell || cell->IsInteriorCell()) return RE::MATERIAL_ID::kNone;
+    auto* tes = RE::TES::GetSingleton();
+    if (!tes) return RE::MATERIAL_ID::kNone;
+    return tes->GetLandMaterialType(a_actor->GetPosition());
+}
+
+RE::MATERIAL_ID ReadHavokPickMaterial(RE::Actor* a_actor) {
+    auto* cell = a_actor->GetParentCell();
+    if (!cell) return RE::MATERIAL_ID::kNone;
     auto* bhkWorld = cell->GetbhkWorld();
-    if (!bhkWorld) {
-        if (diag) logger::info("[surface #{}] cell '{}' has no bhkWorld -> -1",
-                               n, cell->GetFormEditorID() ? cell->GetFormEditorID() : "?");
-        return kUnknown;
-    }
+    if (!bhkWorld) return RE::MATERIAL_ID::kNone;
 
     const auto pos   = a_actor->GetPosition();
     const auto theta = a_actor->data.angle.z;
@@ -146,78 +169,73 @@ std::int32_t GetSurfaceMaterialUnderActor(RE::StaticFunctionTag*, RE::Actor* a_a
     pick.rayInput.from = RE::hkVector4(origin * scale);
     pick.rayInput.to   = RE::hkVector4(endPt  * scale);
     pick.rayInput.enableShapeCollectionFilter = false;
-    pick.rayInput.filterInfo = static_cast<std::uint32_t>(RE::COL_LAYER::kLOS);
 
-    const bool picked = bhkWorld->PickObject(pick);
-    const bool hasHit = picked && pick.rayOutput.HasHit();
-    if (!hasHit) {
-        if (diag) logger::info("[surface #{}] pos=({:.0f},{:.0f},{:.0f}) origin=({:.0f},{:.0f},{:.0f}) PickObject={} HasHit=false -> -1",
-                               n, pos.x, pos.y, pos.z, origin.x, origin.y, origin.z, picked);
+    // Use the actor's own collision filter so we skip its own capsule. kLOS
+    // (our previous filter) hits NPCs and projectiles we don't want.
+    std::uint32_t filterInfo = 0;
+    if (auto* cc = a_actor->GetCharController()) {
+        cc->GetCollisionFilterInfo(filterInfo);
+    }
+    pick.rayInput.filterInfo = filterInfo;
+
+    RE::BSReadLockGuard lock{ bhkWorld->worldLock };
+    if (!bhkWorld->PickObject(pick) || !pick.rayOutput.HasHit()) {
+        return RE::MATERIAL_ID::kNone;
+    }
+    if (auto* hkShape = pick.rayOutput.rootCollidable->GetShape()) {
+        if (auto* bhShape = hkShape->userData) {
+            return bhShape->materialID;
+        }
+    }
+    return RE::MATERIAL_ID::kNone;
+}
+
+}  // namespace
+
+std::int32_t GetSurfaceMaterialUnderActor(RE::StaticFunctionTag*, RE::Actor* a_actor) {
+    static std::atomic<int> s_callCount{ 0 };
+    const int  n    = ++s_callCount;
+    const bool diag = (n <= 30);
+
+    if (!a_actor) {
+        if (diag) logger::info("[surface #{}] actor=null -> -1", n);
         return kUnknown;
     }
 
-    const auto* collidable = pick.rayOutput.rootCollidable;
-    const auto* hkShape    = collidable ? collidable->GetShape() : nullptr;
-    const auto* bhShape    = hkShape ? hkShape->userData : nullptr;
-    const auto  shapeType  = hkShape ? static_cast<std::uint32_t>(hkShape->type) : 0u;
+    // Layer 1 — engine's own cached ground material (cheap & precise).
+    RE::MATERIAL_ID raw   = ReadCharControllerMaterial(a_actor);
+    const char*     layer = "charCtrl";
 
-    // The raycast may have hit a wrapper shape (kBVTree=8, kMOPP=10, kCollection=7,
-    // kList=9, kCompound=17, …) whose top-level materialID is kNone — the real
-    // per-triangle material lives in a child shape. Walk one level via the
-    // standard hkpShapeContainer API (no relocated funcs, no SEH; just two
-    // virtuals that are universally implemented).
-    RE::MATERIAL_ID  rawMat    = bhShape ? bhShape->materialID : RE::MATERIAL_ID::kNone;
-    bool             walked    = false;
-    std::uint32_t    childType = 0;
-    const void*      childHk   = nullptr;
-    if (hkShape && rawMat == RE::MATERIAL_ID::kNone) {
-        const auto* container = hkShape->GetContainer();
-        if (container) {
-            const auto keyIdx = pick.rayOutput.shapeKeyIndex;
-            const auto key    = (keyIdx >= 0 && keyIdx < RE::hkpShapeRayCastOutput::kMaxHierarchyDepth)
-                                  ? pick.rayOutput.shapeKeys[keyIdx]
-                                  : pick.rayOutput.shapeKeys[0];
-            if (key != RE::HK_INVALID_SHAPE_KEY) {
-                RE::hkpShapeBuffer buf{};
-                const auto* childShape = container->GetChildShape(key, buf);
-                if (childShape) {
-                    childHk   = childShape;
-                    childType = static_cast<std::uint32_t>(childShape->type);
-                    walked    = true;
-                    if (const auto* childBh = childShape->userData) {
-                        rawMat = childBh->materialID;
-                    }
-                }
-            }
-        }
+    if (raw == RE::MATERIAL_ID::kNone) {
+        // Layer 2 — outdoor TESObjectLAND lookup.
+        raw   = ReadLandMaterial(a_actor);
+        layer = "land";
+    }
+    if (raw == RE::MATERIAL_ID::kNone) {
+        // Layer 3 — havok pick, top-level material only.
+        raw   = ReadHavokPickMaterial(a_actor);
+        layer = "pick";
     }
 
-    const auto surface = MapMaterialId(rawMat);
+    const auto surface = MapMaterialId(raw);
 
     if (diag) {
-        // NO unchecked pointer casts here: collidable->GetOwner<T>() crashes
-        // when the owner isn't actually a T (terrain owner is hkpRigidBody,
-        // not TESObjectREFR).
-        logger::info("[surface #{}] pos=({:.0f},{:.0f},{:.0f}) shapeType={} bhShape={} matRaw={:#010x} walked={} childType={} childHk={} mapped={}",
-                     n, pos.x, pos.y, pos.z, shapeType,
-                     static_cast<const void*>(bhShape),
-                     static_cast<std::uint32_t>(rawMat),
-                     walked, childType, childHk,
-                     surface);
+        logger::info("[surface #{}] layer={} matRaw={:#010x} mapped={}",
+                     n, layer, static_cast<std::uint32_t>(raw), surface);
     }
 
-    if (surface == kUnknown && rawMat != RE::MATERIAL_ID::kNone) {
-        static std::mutex                       s_unmappedMu;
+    if (surface == kUnknown && raw != RE::MATERIAL_ID::kNone) {
+        static std::mutex                        s_unmappedMu;
         static std::unordered_set<std::uint32_t> s_unmapped;
-        const auto rawId = static_cast<std::uint32_t>(rawMat);
+        const auto rawId = static_cast<std::uint32_t>(raw);
         bool firstTime = false;
         {
             std::lock_guard lock{ s_unmappedMu };
             firstTime = s_unmapped.insert(rawId).second;
         }
         if (firstTime) {
-            logger::info("Unmapped MATERIAL_ID {} ({:#010x}) under actor {:08X}",
-                         rawMat, rawId, a_actor->GetFormID());
+            logger::info("Unmapped MATERIAL_ID {} ({:#010x}) under actor {:08X} (layer={})",
+                         raw, rawId, a_actor->GetFormID(), layer);
         }
     }
     return surface;
