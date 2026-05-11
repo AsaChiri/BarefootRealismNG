@@ -27,7 +27,17 @@ Prerequisites:
 
 - Visual Studio 2022 with the C++/CMake workload
 - vcpkg, with `VCPKG_ROOT` exported (e.g. `setx VCPKG_ROOT D:\vcpkg`)
-- The Color-Glass `commonlibsse-ng` registry is wired up via `vcpkg-configuration.json`
+- Git, with submodule support
+
+CommonLibSSE-NG (alandtse's `ng` fork) is included as a **git submodule** under `extern/CommonLibSSE-NG`. Its own OpenVR submodule lives one level deeper. On a fresh clone:
+
+```powershell
+git clone <this-repo>
+cd BarefootRealismNG
+git submodule update --init --recursive
+```
+
+Then build:
 
 ```powershell
 cmake --preset vs2022-windows
@@ -51,6 +61,20 @@ After install:
 3. In-game, with feet bare, `getglobalvalue PlayerLastDetectedSurface` should cycle 0..8 across stone / dirt / wood / grass / snow / water as expected.
 4. `getglobalvalue PlayerCellType` should match the original mod's behavior:
    - 0 in Breezehome / 1 in Embershard Mine / 2 in open Whiterun / 3 in Riverwood Trader / 4 in the tundra outside Whiterun.
+
+## Debug logging
+
+The hot per-step diagnostic logs (surface-detect layer & material id, etc.) are emitted at `debug` level and silenced by default. To turn them on **without rebuilding**, set either of these env vars before launching Skyrim and re-launch:
+
+```powershell
+# Quick toggle — equivalent to BAREFOOTREALISMNG_LOG_LEVEL=debug
+$env:BAREFOOTREALISMNG_DEBUG = 1
+
+# Or set a precise spdlog level: trace | debug | info | warn | error | critical | off
+$env:BAREFOOTREALISMNG_LOG_LEVEL = "debug"
+```
+
+The plugin log will report the resolved level on the first line (`Log level: debug (set BAREFOOTREALISMNG_DEBUG=1 to enable diagnostics)`). Unmapped-material warnings are emitted at `info` level regardless and stay rate-limited (one entry per unique `MATERIAL_ID` per session).
 
 ## Repository layout
 

@@ -10,13 +10,28 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# CommonLibSSE-NG provides this CMake function via the vcpkg port.
-# Newer alandtse fork (4.18+) re-exports transitive deps on DirectXTK and
-# DirectXMath, so we have to import them before the CommonLibSSE config
-# script tries to resolve its target_link_libraries chain.
-find_package(directxmath CONFIG REQUIRED)
-find_package(directxtk   CONFIG REQUIRED)
-find_package(CommonLibSSE CONFIG REQUIRED)
+# ---- CommonLibSSE-NG (alandtse's ng fork) ----
+#
+# Pulled in as a git submodule at extern/CommonLibSSE-NG. This is the
+# integration pattern alandtse's README recommends — the vcpkg path is
+# explicitly unmaintained for this fork (older Color-Glass port pins
+# upstream 3.7.0, not this 4.18.x ng tree).
+#
+# Configure CLib's CMake options BEFORE add_subdirectory so they apply at
+# its project() call.
+set(BUILD_TESTS         OFF CACHE BOOL "Skip CommonLibSSE unit tests."          FORCE)
+set(SKSE_SUPPORT_XBYAK  ON  CACHE BOOL "Enable xbyak trampoline support."       FORCE)
+set(ENABLE_SKYRIM_SE    ON  CACHE BOOL "Build CommonLibSSE for Skyrim SE."      FORCE)
+set(ENABLE_SKYRIM_AE    ON  CACHE BOOL "Build CommonLibSSE for Skyrim AE."      FORCE)
+set(ENABLE_SKYRIM_VR    ON  CACHE BOOL "Build CommonLibSSE for Skyrim VR."      FORCE)
+add_subdirectory(extern/CommonLibSSE-NG)
+
+# CLib's CMakeLists doesn't auto-include its `add_commonlibsse_plugin()`
+# helper — that ships via `cmake/CommonLibSSE.cmake` which is normally
+# pulled in transitively when CLib is consumed through `find_package(...
+# CONFIG)`. With `add_subdirectory`, we have to include it manually.
+include(${CMAKE_CURRENT_SOURCE_DIR}/extern/CommonLibSSE-NG/cmake/CommonLibSSE.cmake)
+
 find_package(spdlog CONFIG REQUIRED)
 
 set(SOURCES
@@ -39,6 +54,8 @@ set(HEADERS
     src/Papyrus/BarefootStep.h
 )
 
+# add_commonlibsse_plugin is provided by CLib's cmake/CommonLibSSE.cmake,
+# included automatically when add_subdirectory() above processes its CMakeLists.
 add_commonlibsse_plugin(
     ${PROJECT_NAME}
     AUTHOR "BarefootRealism-NG"
@@ -49,7 +66,6 @@ target_include_directories(${PROJECT_NAME} PRIVATE src)
 target_precompile_headers(${PROJECT_NAME} PRIVATE src/PCH.h)
 target_link_libraries(${PROJECT_NAME} PRIVATE spdlog::spdlog)
 
-# MSVC: enable parallel build, treat all but a small set of warnings as errors.
 if(MSVC)
     target_compile_options(${PROJECT_NAME} PRIVATE
         /MP
@@ -59,9 +75,8 @@ if(MSVC)
         /Zc:preprocessor
         /utf-8
         /EHsc
-        # Force-include ForceIncludes.h into every TU (including the
-        # auto-generated __<Plugin>Plugin.cpp emitted by
-        # add_commonlibsse_plugin) so std::literals are visible at global scope.
+        # Force-include ForceIncludes.h so std::literals are visible at
+        # global scope in the auto-generated plugin glue.
         /FI${CMAKE_CURRENT_SOURCE_DIR}/src/ForceIncludes.h
     )
 endif()

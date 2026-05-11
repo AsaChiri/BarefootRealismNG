@@ -10,7 +10,6 @@
 #include "RE/H/hkpCollidable.h"
 #include "RE/T/TES.h"
 
-#include <atomic>
 #include <mutex>
 #include <unordered_set>
 
@@ -193,12 +192,12 @@ RE::MATERIAL_ID ReadHavokPickMaterial(RE::Actor* a_actor) {
 }  // namespace
 
 std::int32_t GetSurfaceMaterialUnderActor(RE::StaticFunctionTag*, RE::Actor* a_actor) {
-    static std::atomic<int> s_callCount{ 0 };
-    const int  n    = ++s_callCount;
-    const bool diag = (n <= 30);
-
+    // All diagnostic logging here goes through `logger::debug`, which is
+    // silent unless the user sets BAREFOOTREALISMNG_DEBUG=1 (or
+    // BAREFOOTREALISMNG_LOG_LEVEL=debug) before launching Skyrim.
+    // See Logging.h::ResolveLogLevel.
     if (!a_actor) {
-        if (diag) logger::info("[surface #{}] actor=null -> -1", n);
+        logger::debug("[surface] actor=null -> -1");
         return kUnknown;
     }
 
@@ -219,11 +218,12 @@ std::int32_t GetSurfaceMaterialUnderActor(RE::StaticFunctionTag*, RE::Actor* a_a
 
     const auto surface = MapMaterialId(raw);
 
-    if (diag) {
-        logger::info("[surface #{}] layer={} matRaw={:#010x} mapped={}",
-                     n, layer, static_cast<std::uint32_t>(raw), surface);
-    }
+    logger::debug("[surface] layer={} matRaw={:#010x} mapped={}",
+                  layer, static_cast<std::uint32_t>(raw), surface);
 
+    // Unmapped-material reporting stays at info level: it's rate-limited
+    // to one line per unique MATERIAL_ID per session, so the noise is
+    // bounded, and it's actionable feedback for expanding MapMaterialId.
     if (surface == kUnknown && raw != RE::MATERIAL_ID::kNone) {
         static std::mutex                        s_unmappedMu;
         static std::unordered_set<std::uint32_t> s_unmapped;
