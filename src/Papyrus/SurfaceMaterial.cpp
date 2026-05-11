@@ -113,9 +113,15 @@ namespace {
 // Returns kNone on failure; the caller maps to the mod's 0..8 surface id.
 //
 // Layer 1 (preferred): the bhkCharacterController already caches the
-// "ground material under this actor" byte at offset 0x304, updated every
-// physics tick by the engine for footstep sound selection. Crash-free,
-// zero raycast overhead, accurate.
+// "ground material under this actor" byte, updated every physics tick by
+// the engine for footstep sound selection. Crash-free, zero raycast
+// overhead, accurate. The CommonLibVR fork by alandtse names this field
+// (see https://github.com/alandtse/CommonLibVR/blob/main/include/RE/B/bhkCharacterController.h);
+// CharmedBaryon/CommonLibSSE-NG 3.7.0 (our pinned baseline) still calls
+// it `unk300` and treats it as 8 bytes starting at 0x300. The field of
+// interest is the MATERIAL_ID at 0x304 — i.e. the upper 4 bytes of that
+// qword. The `SurfaceMaterial(cc)` accessor below names it so the rest of
+// the code reads cleanly and the offset lives in exactly one place.
 //
 // Layer 2 (outdoor fallback): RE::TES::GetLandMaterialType(pos) reads the
 // per-quadrant TESLandTexture data on the current TESObjectLAND record.
@@ -129,15 +135,20 @@ namespace {
 // on compound shapes (the shapeKey values in rayOutput aren't valid indices
 // into Skyrim's compound shape data the way the engine expects).
 //
-// Source references: see notes-for-future-me block at the top of this file
-// — OAR src/Conditions.cpp, RaySense src/RaySenseLogic.cpp, Precision
-// src/Utils.cpp.
-constexpr std::ptrdiff_t kCharCtrlMaterialOffset = 0x304;
+// Source references: see OAR src/Conditions.cpp, RaySense
+// src/RaySenseLogic.cpp, Precision src/Utils.cpp on GitHub.
+
+// Drop this once we upgrade to a CommonLib revision that exposes
+// `bhkCharacterController::surfaceMaterial` directly.
+[[nodiscard]] inline RE::MATERIAL_ID& SurfaceMaterial(RE::bhkCharacterController* a_cc) noexcept {
+    constexpr std::ptrdiff_t kOffset = 0x304;
+    return *SKSE::stl::adjust_pointer<RE::MATERIAL_ID>(a_cc, kOffset);
+}
 
 RE::MATERIAL_ID ReadCharControllerMaterial(RE::Actor* a_actor) {
     auto* cc = a_actor->GetCharController();
     if (!cc) return RE::MATERIAL_ID::kNone;
-    return *SKSE::stl::adjust_pointer<RE::MATERIAL_ID>(cc, kCharCtrlMaterialOffset);
+    return SurfaceMaterial(cc);
 }
 
 RE::MATERIAL_ID ReadLandMaterial(RE::Actor* a_actor) {
