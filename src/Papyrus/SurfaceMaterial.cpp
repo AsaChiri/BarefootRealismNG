@@ -112,16 +112,12 @@ namespace {
 // Three-layer pipeline used by OpenAnimationReplacer / RaySense / Trails.
 // Returns kNone on failure; the caller maps to the mod's 0..8 surface id.
 //
-// Layer 1 (preferred): the bhkCharacterController already caches the
-// "ground material under this actor" byte, updated every physics tick by
-// the engine for footstep sound selection. Crash-free, zero raycast
-// overhead, accurate. The CommonLibVR fork by alandtse names this field
-// (see https://github.com/alandtse/CommonLibVR/blob/main/include/RE/B/bhkCharacterController.h);
-// CharmedBaryon/CommonLibSSE-NG 3.7.0 (our pinned baseline) still calls
-// it `unk300` and treats it as 8 bytes starting at 0x300. The field of
-// interest is the MATERIAL_ID at 0x304 — i.e. the upper 4 bytes of that
-// qword. The `SurfaceMaterial(cc)` accessor below names it so the rest of
-// the code reads cleanly and the offset lives in exactly one place.
+// Layer 1 (preferred): the bhkCharacterController caches the "ground
+// material under this actor" byte at `surfaceMaterial`, updated every
+// physics tick by the engine for footstep sound selection. Crash-free,
+// zero raycast overhead, accurate. Named field exposed by
+// alandtse/CommonLibVR's `ng` branch (our vcpkg overlay-port pins 4.18.0
+// — see `vcpkg-overlay-ports/commonlibsse-ng/portfile.cmake`).
 //
 // Layer 2 (outdoor fallback): RE::TES::GetLandMaterialType(pos) reads the
 // per-quadrant TESLandTexture data on the current TESObjectLAND record.
@@ -135,20 +131,13 @@ namespace {
 // on compound shapes (the shapeKey values in rayOutput aren't valid indices
 // into Skyrim's compound shape data the way the engine expects).
 //
-// Source references: see OAR src/Conditions.cpp, RaySense
-// src/RaySenseLogic.cpp, Precision src/Utils.cpp on GitHub.
-
-// Drop this once we upgrade to a CommonLib revision that exposes
-// `bhkCharacterController::surfaceMaterial` directly.
-[[nodiscard]] inline RE::MATERIAL_ID& SurfaceMaterial(RE::bhkCharacterController* a_cc) noexcept {
-    constexpr std::ptrdiff_t kOffset = 0x304;
-    return *SKSE::stl::adjust_pointer<RE::MATERIAL_ID>(a_cc, kOffset);
-}
+// Source references: OAR src/Conditions.cpp, RaySense src/RaySenseLogic.cpp,
+// Precision src/Utils.cpp on GitHub.
 
 RE::MATERIAL_ID ReadCharControllerMaterial(RE::Actor* a_actor) {
     auto* cc = a_actor->GetCharController();
     if (!cc) return RE::MATERIAL_ID::kNone;
-    return SurfaceMaterial(cc);
+    return cc->surfaceMaterial;
 }
 
 RE::MATERIAL_ID ReadLandMaterial(RE::Actor* a_actor) {
@@ -183,11 +172,11 @@ RE::MATERIAL_ID ReadHavokPickMaterial(RE::Actor* a_actor) {
 
     // Use the actor's own collision filter so we skip its own capsule. kLOS
     // (our previous filter) hits NPCs and projectiles we don't want.
-    std::uint32_t filterInfo = 0;
+    // CLib 4.18 changed both the field type (uint32_t -> CFilter) AND the
+    // GetCollisionFilterInfo out-parameter signature (uint32_t& -> CFilter&).
     if (auto* cc = a_actor->GetCharController()) {
-        cc->GetCollisionFilterInfo(filterInfo);
+        cc->GetCollisionFilterInfo(pick.rayInput.filterInfo);
     }
-    pick.rayInput.filterInfo = filterInfo;
 
     RE::BSReadLockGuard lock{ bhkWorld->worldLock };
     if (!bhkWorld->PickObject(pick) || !pick.rayOutput.HasHit()) {

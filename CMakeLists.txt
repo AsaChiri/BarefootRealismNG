@@ -10,7 +10,12 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# CommonLibSSE-NG provides this CMake function via the Color-Glass vcpkg port.
+# CommonLibSSE-NG provides this CMake function via the vcpkg port.
+# Newer alandtse fork (4.18+) re-exports transitive deps on DirectXTK and
+# DirectXMath, so we have to import them before the CommonLibSSE config
+# script tries to resolve its target_link_libraries chain.
+find_package(directxmath CONFIG REQUIRED)
+find_package(directxtk   CONFIG REQUIRED)
 find_package(CommonLibSSE CONFIG REQUIRED)
 find_package(spdlog CONFIG REQUIRED)
 

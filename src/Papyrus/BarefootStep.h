@@ -6,7 +6,9 @@ namespace BarefootRealismNG::Papyrus {
 
 // Sentinel returned by ApplyDirtinessPainStep when no dirtiness-tier transition
 // occurred this step; Papyrus checks for this value to skip the SlaveTats sync.
-inline constexpr std::int32_t kNoTierChange = std::numeric_limits<std::int32_t>::min();
+// Parenthesised to dodge the legacy Windows `min`/`max` macros that
+// CLib 4.18's PCH pulls in.
+inline constexpr std::int32_t kNoTierChange = (std::numeric_limits<std::int32_t>::min)();
 
 // Cache the four GlobalVariable pointers we'll read/write per footstep.
 // Called once from PlayerBarefootQuestScript.OnInit and again from
