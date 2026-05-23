@@ -5,8 +5,9 @@ import PO3_SKSEFunctions
 PlayerBarefootQuestScript Property QuestScript Auto
 GlobalVariable Property FeetDirtiness Auto
 GlobalVariable Property PlayerLastSurfaceType Auto
-FormList Property PBFWaterfallList Auto
-FormList Property PBFWaterList Auto
+; PBFWaterfallList / PBFWaterList (FormList) properties were dropped: the forms
+; were removed from BarefootRealism.esp and the effect resolves water purely via
+; PlayerLastSurfaceType == 8 and PO3_SKSEFunctions.IsRefInWater. Clean-save change.
 
 Event OnEffectStart(Actor akTarget, Actor akCaster)
 	Actor PlayerRef = Game.GetPlayer()
