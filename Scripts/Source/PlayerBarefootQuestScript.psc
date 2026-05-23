@@ -38,8 +38,15 @@ GlobalVariable Property PlayerLastSurfaceDirtiness  Auto
 Sound Property PainSound Auto
 Sound Property PainSoundMale Auto
 
-Keyword Property zbfWornAnkles Auto
-Keyword Property zad_DeviousAnkleShackles Auto
+; Detection keywords distributed by Keyword Item Distributor (see BarefootRealism_KID.ini).
+; KID is REQUIRED for the ankle-restraint / shoes / barefoot-exception features: it auto-creates
+; these keywords (they are NOT stored in BarefootRealism.esp) and the shipped INI reproduces the old
+; zbfWornAnkles / zad_DeviousAnkleShackles / " Shoes" behavior. Replaced the old zbfWornAnkles /
+; zad_DeviousAnkleShackles properties and PBFConfig's BarefootFootwearException Armor; existing saves
+; may log benign "property not found" warnings for those (clean save optional).
+Keyword Property BarefootRealism_AnkleRestraint Auto
+Keyword Property BarefootRealism_Shoes Auto
+Keyword Property BarefootRealism_BarefootException Auto
 
 float LastUpdateTime = 0.0
 Armor CurrentFootwear = None
@@ -111,8 +118,11 @@ Int Function GetPainTier(float pain)
 EndFunction
 
 Bool Function IsPlayerBarefoot()
+	if BarefootRealism_BarefootException == None
+		BarefootRealism_BarefootException = Keyword.GetKeyword("BarefootRealism_BarefootException")
+	endif
 	Armor boots = PlayerRef.GetWornForm(0x00000080) as Armor
-	return (boots == None || boots == Config.BarefootFootwearException) && PlayerRef.GetActorBase().GetRace() != WerewolfRace
+	return (boots == None || boots.HasKeyword(BarefootRealism_BarefootException)) && PlayerRef.GetActorBase().GetRace() != WerewolfRace
 EndFunction
 
 Function UpdateTattoo(int tier)
@@ -321,11 +331,11 @@ EndFunction
 Auto State Shod
 
 Event OnUpdate()
-	if zbfWornAnkles == None
-		zbfWornAnkles = Keyword.GetKeyword("zbfWornAnkles")
+	if BarefootRealism_AnkleRestraint == None
+		BarefootRealism_AnkleRestraint = Keyword.GetKeyword("BarefootRealism_AnkleRestraint")
 	endif
-	if zad_DeviousAnkleShackles == None
-		zad_DeviousAnkleShackles = Keyword.GetKeyword("zad_DeviousAnkleShackles")
+	if BarefootRealism_Shoes == None
+		BarefootRealism_Shoes = Keyword.GetKeyword("BarefootRealism_Shoes")
 	endif
 
 	If IsPlayerBarefoot()
@@ -352,7 +362,7 @@ Event OnUpdate()
 	EndIf
 	
 	Armor boots = PlayerRef.GetWornForm(0x00000080) as Armor
-	if ((PlayerRef.WornHasKeyword(zbfWornAnkles) || PlayerRef.WornHasKeyword(zad_DeviousAnkleShackles)) && Config.AnkleCuffsPreventFootwear) && (!Config.AnkleCuffsAllowShoes || StringUtil.Find(boots.getname(), " Shoes") == -1)
+	if (PlayerRef.WornHasKeyword(BarefootRealism_AnkleRestraint) && Config.AnkleCuffsPreventFootwear) && (!Config.AnkleCuffsAllowShoes || !PlayerRef.WornHasKeyword(BarefootRealism_Shoes))
 		Debug.MessageBox("Your fetters are preventing you from wearing these boots.")
 		PlayerRef.UnequipItem(boots)
 	EndIf
@@ -374,11 +384,11 @@ EndState
 State Barefoot
 
 Event OnUpdate()
-	if zbfWornAnkles == None
-		zbfWornAnkles = Keyword.GetKeyword("zbfWornAnkles")
+	if BarefootRealism_AnkleRestraint == None
+		BarefootRealism_AnkleRestraint = Keyword.GetKeyword("BarefootRealism_AnkleRestraint")
 	endif
-	if zad_DeviousAnkleShackles == None
-		zad_DeviousAnkleShackles = Keyword.GetKeyword("zad_DeviousAnkleShackles")
+	if BarefootRealism_Shoes == None
+		BarefootRealism_Shoes = Keyword.GetKeyword("BarefootRealism_Shoes")
 	endif
 
 	If !IsPlayerBarefoot()
@@ -390,7 +400,7 @@ Event OnUpdate()
 				Return
 			endif
 
-			if ((PlayerRef.WornHasKeyword(zbfWornAnkles) || PlayerRef.WornHasKeyword(zad_DeviousAnkleShackles)) && Config.AnkleCuffsPreventFootwear) && (!Config.AnkleCuffsAllowShoes || StringUtil.Find(boots.getname(), " Shoes") == -1)
+			if (PlayerRef.WornHasKeyword(BarefootRealism_AnkleRestraint) && Config.AnkleCuffsPreventFootwear) && (!Config.AnkleCuffsAllowShoes || !PlayerRef.WornHasKeyword(BarefootRealism_Shoes))
 				Debug.MessageBox("As you try to put the boots on, you realise that you can't fit your shackled ankles into them.")
 				PlayerRef.UnequipItem(boots)
 				return
