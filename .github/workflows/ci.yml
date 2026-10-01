@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-build:
+    name: Native compile (Windows / VS2022)
+    runs-on: windows-2022
+    timeout-minutes: 45
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}/.ci/vcpkg
+      VCPKG_BINARY_SOURCES: clear
+      VCPKG_DISABLE_METRICS: "1"
+    steps:
+      - name: Check out source and pinned submodules
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Check out vcpkg at the registry baseline
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: microsoft/vcpkg
+          ref: ee12231b20c95013c6638d845d04c91559a1d1ff
+          path: .ci/vcpkg
+          persist-credentials: false
+
+      - name: Verify vcpkg pin and bootstrap
+        shell: pwsh
+        run: |
+          $baseline = (Get-Content vcpkg-configuration.json -Raw | ConvertFrom-Json).'default-registry'.baseline
+          $revision = git -C $env:VCPKG_ROOT rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($revision -ne $baseline) { throw "Update the CI vcpkg pin to match the registry baseline." }
+          & "$env:VCPKG_ROOT/bootstrap-vcpkg.bat" -disableMetrics
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Configure native plugin
+        run: cmake --preset vs2022-windows
+
+      - name: Compile native plugin
+        # Compile only: no Papyrus packaging, artifact upload, or game execution.
+        run: cmake --build --preset vs2022-windows --parallel 2
